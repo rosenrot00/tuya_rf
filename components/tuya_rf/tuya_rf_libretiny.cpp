@@ -50,7 +50,20 @@ void TuyaRfComponent::turn_off_receiver() {
     this->set_receiver(false);
    } else {
      ESP_LOGD(TAG,"receiver already disabled");
-   }
+  }
+}
+
+void TuyaRfComponent::reset_receiver_buffer_() {
+  auto &s = this->store_;
+  if (!this->RemoteReceiverBase::pin_->digital_read()) {
+    s.buffer_write_at = s.buffer_read_at = 1;
+  } else {
+    s.buffer_write_at = s.buffer_read_at = 0;
+  }
+  this->old_write_at_ = s.buffer_read_at;
+  this->receive_started_ = false;
+  this->receive_start_time_ = 0;
+  this->receive_start_pulse_us_ = 0;
 }
 
 void TuyaRfComponent::set_frequency_mhz(uint16_t frequency_mhz) {
@@ -72,7 +85,6 @@ void TuyaRfComponent::set_frequency_mhz(uint16_t frequency_mhz) {
     return;
   }
 
-  auto &s = this->store_;
   this->RemoteReceiverBase::pin_->detach_interrupt();
 
   int res = StartRx(this->frequency_mhz_, this->dout_mute_, this->rssi_avg_mode_,
@@ -83,15 +95,7 @@ void TuyaRfComponent::set_frequency_mhz(uint16_t frequency_mhz) {
     return;
   }
 
-  if (!this->RemoteReceiverBase::pin_->digital_read()) {
-    s.buffer_write_at = s.buffer_read_at = 1;
-  } else {
-    s.buffer_write_at = s.buffer_read_at = 0;
-  }
-  this->old_write_at_ = s.buffer_read_at;
-  this->receive_started_ = false;
-  this->receive_start_time_ = 0;
-  this->receive_start_pulse_us_ = 0;
+  this->reset_receiver_buffer_();
   this->RemoteReceiverBase::pin_->attach_interrupt(RemoteReceiverComponentStore::gpio_intr, &this->store_, gpio::INTERRUPT_ANY_EDGE);
 }
 
@@ -114,15 +118,7 @@ void TuyaRfComponent::set_receiver(bool on) {
       }
     }
     // First index is a space (signal is inverted)
-    if (!this->RemoteReceiverBase::pin_->digital_read()) {
-      s.buffer_write_at = s.buffer_read_at = 1;
-    } else {
-      s.buffer_write_at = s.buffer_read_at = 0;
-    }
-    this->old_write_at_ = s.buffer_read_at;
-    this->receive_started_ = false;
-    this->receive_start_time_ = 0;
-    this->receive_start_pulse_us_ = 0;
+    this->reset_receiver_buffer_();
     this->RemoteReceiverBase::pin_->attach_interrupt(RemoteReceiverComponentStore::gpio_intr, &this->store_, gpio::INTERRUPT_ANY_EDGE);
     this->high_freq_.start();
   } else {
@@ -299,13 +295,13 @@ void TuyaRfComponent::await_target_time_() {
 
 void TuyaRfComponent::mark_(uint32_t usec) {
   this->await_target_time_();
-  this->RemoteTransmitterBase::pin_->digital_write(false);
+  this->RemoteTransmitterBase::pin_->digital_write(true);
   this->target_time_ += usec;
 }
 
 void TuyaRfComponent::space_(uint32_t usec) {
   this->await_target_time_();
-  this->RemoteTransmitterBase::pin_->digital_write(true);
+  this->RemoteTransmitterBase::pin_->digital_write(false);
   this->target_time_ += usec;
 }
 
@@ -316,6 +312,12 @@ void IRAM_ATTR TuyaRfComponent::send_internal(uint32_t send_times, uint32_t send
 
   this->transmitting_=true;
   this->RemoteTransmitterBase::pin_->digital_write(false);
+  const bool restore_receiver = !this->receiver_disabled_;
+  if (restore_receiver) {
+    this->RemoteReceiverBase::pin_->detach_interrupt();
+    this->high_freq_.stop();
+    this->receive_started_ = false;
+  }
 
   // StartTx runs WITHOUT InterruptLock — it does SPI communication and
   // polls AutoSwitchStatus which needs working timers (millis/micros).
@@ -353,24 +355,36 @@ void IRAM_ATTR TuyaRfComponent::send_internal(uint32_t send_times, uint32_t send
     case 1:
       ESP_LOGE(TAG,"Error configuring RF registers after %u us", micros() - tx_requested_us);
       this->transmitting_=false;
+      if (restore_receiver) {
+        this->set_receiver(true);
+      }
       return;
     case 2:
       ESP_LOGE(TAG,"Error go tx after %u us", micros() - tx_requested_us);
       this->transmitting_=false;
+      if (restore_receiver) {
+        this->set_receiver(true);
+      }
       return;
     case 3:
       ESP_LOGE(TAG,"Unsupported frequency %u MHz after %u us", frequency_mhz, micros() - tx_requested_us);
       this->transmitting_=false;
+      if (restore_receiver) {
+        this->set_receiver(true);
+      }
       return;
     default:
       ESP_LOGE(TAG,"Unknown error %d after %u us",res, micros() - tx_requested_us);
       this->transmitting_=false;
+      if (restore_receiver) {
+        this->set_receiver(true);
+      }
       return;
   }
   const uint32_t radio_ready_us = micros();
   ESP_LOGD(TAG, "TX radio ready after %u us", radio_ready_us - tx_requested_us);
 
-  this->RemoteTransmitterBase::pin_->digital_write(true);
+  this->RemoteTransmitterBase::pin_->digital_write(false);
   this->target_time_ = 0;
 
   {
@@ -396,13 +410,14 @@ void IRAM_ATTR TuyaRfComponent::send_internal(uint32_t send_times, uint32_t send
     }
     this->space_(2000);
     this->await_target_time_();
+    this->RemoteTransmitterBase::pin_->digital_write(false);
   }  // InterruptLock released — timers work again for mode switching below
 
   const uint32_t waveform_done_us = micros();
   ESP_LOGD(TAG, "TX waveform done after %u us", waveform_done_us - radio_ready_us);
 
   this->transmitting_=false;
-  if (this->receiver_disabled_) {
+  if (!restore_receiver) {
     if(CMT2300A_GoStby()) {
       //ESP_LOGD(TAG,"go stby ok");
     } else {
@@ -414,6 +429,10 @@ void IRAM_ATTR TuyaRfComponent::send_internal(uint32_t send_times, uint32_t send
                          this->agc_ook_register_mask_, this->agc_ook_registers_);
     if (rx_res != 0) {
       ESP_LOGE(TAG, "Error returning to RX (%d)", rx_res);
+    } else {
+      this->reset_receiver_buffer_();
+      this->RemoteReceiverBase::pin_->attach_interrupt(RemoteReceiverComponentStore::gpio_intr, &this->store_, gpio::INTERRUPT_ANY_EDGE);
+      this->high_freq_.start();
     }
   }
   ESP_LOGD(TAG, "TX complete after %u ms", millis() - tx_requested_ms);
