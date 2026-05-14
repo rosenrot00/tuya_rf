@@ -106,6 +106,7 @@ class TuyaRfComponent : public remote_base::RemoteTransmitterBase,
 
   void await_target_time_();
   void set_receiver(bool on);
+  void reset_receiver_buffer_();
   void log_frame_stats_(const char *event, uint32_t pulses, uint32_t duration_us);
   void log_raw_frame_(const char *prefix = "Received Raw");
   void log_buffer_raw_(const char *prefix, uint32_t end_index, uint32_t appended_us = 0);
