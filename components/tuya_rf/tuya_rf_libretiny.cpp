@@ -15,6 +15,28 @@ static const uint8_t AGC_OOK_REGISTER_ADDRS[TUYA_RF_AGC_OOK_REGISTER_COUNT] = {
     CMT2300A_CUS_AGC1, CMT2300A_CUS_AGC2, CMT2300A_CUS_AGC3, CMT2300A_CUS_AGC4, CMT2300A_CUS_OOK1,
     CMT2300A_CUS_OOK2, CMT2300A_CUS_OOK3, CMT2300A_CUS_OOK4, CMT2300A_CUS_OOK5};
 
+static const char *modulation_name(uint8_t modulation) {
+  switch (modulation) {
+    case TUYA_RF_MODULATION_2FSK:
+      return "2-FSK";
+    case TUYA_RF_MODULATION_GFSK:
+      return "GFSK";
+    case TUYA_RF_MODULATION_OOK:
+    default:
+      return "OOK/ASK";
+  }
+}
+
+static const char *fsk_profile_name(uint8_t profile) {
+  switch (profile) {
+    case TUYA_RF_FSK_PROFILE_RFPDK_868_2K4_DEV5:
+      return "RFPDK 868 MHz 2-FSK 2.4 kbps dev=5 kHz";
+    case TUYA_RF_FSK_PROFILE_VELUX_86895_2K4_DEV5:
+    default:
+      return "VELUX/io-homecontrol debug 868.95 MHz, 2-FSK seed 2.4 kbps dev=5 kHz";
+  }
+}
+
 void IRAM_ATTR HOT RemoteReceiverComponentStore::gpio_intr(RemoteReceiverComponentStore *arg) {
   const uint32_t now = micros();
   // If the lhs is 1 (rising edge) we should write to an uneven index and vice versa
@@ -60,8 +82,12 @@ void TuyaRfComponent::reset_receiver_buffer_() {
   } else {
     s.buffer_write_at = s.buffer_read_at = 0;
   }
+  if (s.buffer != nullptr) {
+    s.buffer[s.buffer_read_at] = micros();
+  }
   this->old_write_at_ = s.buffer_read_at;
   this->receive_started_ = false;
+  this->fsk_receive_started_ = false;
   this->receive_start_time_ = 0;
   this->receive_start_pulse_us_ = 0;
 }
@@ -88,7 +114,10 @@ void TuyaRfComponent::set_frequency_mhz(uint16_t frequency_mhz) {
   this->RemoteReceiverBase::pin_->detach_interrupt();
 
   int res = StartRx(this->frequency_mhz_, this->dout_mute_, this->rssi_avg_mode_,
-                    this->agc_ook_register_mask_, this->agc_ook_registers_);
+                    this->agc_ook_register_mask_, this->agc_ook_registers_,
+                    this->modulation_, this->fsk_profile_, this->fsk_direct_mode_,
+                    this->fsk_data_rate_register_mask_, this->fsk_data_rate_registers_,
+                    this->fsk_baseband_register_mask_, this->fsk_baseband_registers_);
   if (res != 0) {
     ESP_LOGE(TAG, "Error switching RX frequency to %u MHz (%d)",
              static_cast<unsigned>(this->frequency_mhz_), res);
@@ -101,7 +130,8 @@ void TuyaRfComponent::set_frequency_mhz(uint16_t frequency_mhz) {
 
 void TuyaRfComponent::set_receiver(bool on) {
   if (on) {
-    ESP_LOGD(TAG, "starting receiver at %u MHz", static_cast<unsigned>(this->frequency_mhz_));
+    ESP_LOGD(TAG, "starting receiver at %u MHz, modulation=%s", static_cast<unsigned>(this->frequency_mhz_),
+             modulation_name(this->modulation_));
     auto &s = this->store_;
     if (s.buffer==NULL) {
       ESP_LOGD(TAG,"allocating receiver buffer");
@@ -109,9 +139,13 @@ void TuyaRfComponent::set_receiver(bool on) {
       void *buf = (void *) s.buffer;
       memset(buf, 0, s.buffer_size * sizeof(uint32_t));
     }
+    s.filter_us = this->modulation_ == TUYA_RF_MODULATION_OOK ? this->filter_us_ : this->fsk_filter_us_;
     if (!this->transmitting_) {
       int res = StartRx(this->frequency_mhz_, this->dout_mute_, this->rssi_avg_mode_,
-                        this->agc_ook_register_mask_, this->agc_ook_registers_);
+                        this->agc_ook_register_mask_, this->agc_ook_registers_,
+                        this->modulation_, this->fsk_profile_, this->fsk_direct_mode_,
+                        this->fsk_data_rate_register_mask_, this->fsk_data_rate_registers_,
+                        this->fsk_baseband_register_mask_, this->fsk_baseband_registers_);
       if (res != 0) {
         ESP_LOGE(TAG, "Error starting RX (%d)", res);
         return;
@@ -141,7 +175,7 @@ void TuyaRfComponent::setup() {
   this->RemoteReceiverBase::pin_->setup();
   
   auto &s = this->store_;
-  s.filter_us = this->filter_us_;
+  s.filter_us = this->modulation_ == TUYA_RF_MODULATION_OOK ? this->filter_us_ : this->fsk_filter_us_;
   s.pin = this->RemoteReceiverBase::pin_->to_isr();
   s.buffer_size = this->buffer_size_;
 
@@ -211,6 +245,23 @@ void TuyaRfComponent::dump_config() {
     }
   }
   ESP_LOGCONFIG(TAG, "  Frequency: %u MHz", this->frequency_mhz_);
+  ESP_LOGCONFIG(TAG, "  Modulation: %s", modulation_name(this->modulation_));
+  if (this->modulation_ != TUYA_RF_MODULATION_OOK) {
+    ESP_LOGCONFIG(TAG, "  FSK profile: %s", fsk_profile_name(this->fsk_profile_));
+    ESP_LOGCONFIG(TAG, "  FSK direct DOUT debug: %s", YESNO(this->fsk_direct_mode_));
+    ESP_LOGCONFIG(TAG, "  FSK edge filter: %u us", this->fsk_filter_us_);
+    ESP_LOGCONFIG(TAG, "  FSK burst gap: %u us", this->fsk_frame_gap_us_);
+    if (this->fsk_data_rate_register_mask_ != 0) {
+      ESP_LOGCONFIG(TAG, "  FSK data-rate register overrides: mask=0x%06X", this->fsk_data_rate_register_mask_);
+    }
+    if (this->fsk_baseband_register_mask_ != 0) {
+      ESP_LOGCONFIG(TAG, "  FSK baseband register overrides: mask=0x%08X", this->fsk_baseband_register_mask_);
+    }
+    if (this->modulation_ == TUYA_RF_MODULATION_GFSK &&
+        this->fsk_data_rate_register_mask_ == 0 && this->fsk_baseband_register_mask_ == 0) {
+      ESP_LOGW(TAG, "  GFSK selected without custom RFPDK registers; using the built-in 2-FSK seed profile");
+    }
+  }
   ESP_LOGCONFIG(TAG, "  Transmit Queue Max Size: %u", this->queue_max_size_);
   ESP_LOGCONFIG(TAG, "  Transmit Queue Delay: %u ms", this->queue_delay_ms_);
   if (this->receiver_disabled_) {
@@ -280,6 +331,57 @@ uint32_t TuyaRfComponent::candidate_pulse_count_(uint32_t candidate_end) const {
   auto &s = this->store_;
   const uint32_t first = (s.buffer_read_at + 1) % s.buffer_size;
   return 1 + (s.buffer_size + candidate_end - first) % s.buffer_size;
+}
+
+void TuyaRfComponent::process_fsk_debug_() {
+  auto &s = this->store_;
+  const uint32_t write_at = s.buffer_write_at;
+  uint32_t dist = (s.buffer_size + write_at - s.buffer_read_at) % s.buffer_size;
+  const uint32_t now = micros();
+
+  if (!this->fsk_receive_started_ && dist > 1) {
+    s.buffer_read_at = (s.buffer_read_at + 1) % s.buffer_size;
+    old_write_at_ = s.buffer_read_at;
+    this->fsk_receive_started_ = true;
+    this->receive_start_time_ = s.buffer[s.buffer_read_at];
+    this->receive_start_pulse_us_ = 0;
+    dist = (s.buffer_size + write_at - s.buffer_read_at) % s.buffer_size;
+  }
+
+  if (!this->fsk_receive_started_) {
+    return;
+  }
+
+  const uint32_t gap = now - s.buffer[write_at];
+  const bool forced_end = dist > this->max_pulses_ || dist >= s.buffer_size - 5;
+  if (!forced_end && gap < this->fsk_frame_gap_us_) {
+    return;
+  }
+
+  const uint32_t edge_count = dist;
+  const uint32_t duration_us = now - this->receive_start_time_;
+  if (edge_count < this->min_pulses_) {
+    this->rejected_frames_++;
+    ESP_LOGD(TAG, "FSK burst rejected: edges=%u below min_pulses=%u duration=%u us gap=%u us rejected=%u",
+             edge_count, this->min_pulses_, duration_us, gap, this->rejected_frames_);
+    this->fsk_receive_started_ = false;
+    s.buffer_read_at = write_at;
+    old_write_at_ = write_at;
+    return;
+  }
+
+  this->received_frames_++;
+  const int rssi_dbm = CMT2300A_GetRssiDBm();
+  ESP_LOGD(TAG, "FSK burst accepted #%u: edges=%u duration=%u us gap=%u us rssi=%d dBm%s",
+           this->received_frames_, edge_count, duration_us, gap, rssi_dbm,
+           forced_end ? " forced" : "");
+  if (this->single_raw_dump_) {
+    this->log_buffer_raw_("FSK Raw", write_at, gap);
+  }
+
+  this->fsk_receive_started_ = false;
+  s.buffer_read_at = write_at;
+  old_write_at_ = write_at;
 }
 
 void TuyaRfComponent::await_target_time_() {
@@ -426,7 +528,10 @@ void IRAM_ATTR TuyaRfComponent::send_internal(uint32_t send_times, uint32_t send
   } else {
     //Go back to rx mode
     int rx_res = StartRx(this->frequency_mhz_, this->dout_mute_, this->rssi_avg_mode_,
-                         this->agc_ook_register_mask_, this->agc_ook_registers_);
+                         this->agc_ook_register_mask_, this->agc_ook_registers_,
+                         this->modulation_, this->fsk_profile_, this->fsk_direct_mode_,
+                         this->fsk_data_rate_register_mask_, this->fsk_data_rate_registers_,
+                         this->fsk_baseband_register_mask_, this->fsk_baseband_registers_);
     if (rx_res != 0) {
       ESP_LOGE(TAG, "Error returning to RX (%d)", rx_res);
     } else {
@@ -462,6 +567,10 @@ void TuyaRfComponent::loop() {
   if (this->receiver_disabled_) {
     return;
   }  
+  if (this->modulation_ != TUYA_RF_MODULATION_OOK) {
+    this->process_fsk_debug_();
+    return;
+  }
   auto &s = this->store_;
 
   // copy write at to local variables, as it's volatile

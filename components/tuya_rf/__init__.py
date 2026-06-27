@@ -40,6 +40,13 @@ CONF_FREQUENCY = "frequency"
 CONF_RSSI_AVG_MODE = "rssi_avg_mode"
 CONF_AGC_OOK_REGISTERS = "agc_ook_registers"
 CONF_DUMP_SUPPRESSED_RAW = "dump_suppressed_raw"
+CONF_MODULATION = "modulation"
+CONF_FSK_PROFILE = "fsk_profile"
+CONF_FSK_DIRECT_MODE = "fsk_direct_mode"
+CONF_FSK_FILTER = "fsk_filter"
+CONF_FSK_FRAME_GAP = "fsk_frame_gap"
+CONF_FSK_DATA_RATE_REGISTERS = "fsk_data_rate_registers"
+CONF_FSK_BASEBAND_REGISTERS = "fsk_baseband_registers"
 
 from esphome.core import CORE, TimePeriod
 
@@ -77,6 +84,19 @@ TOLERANCE_SCHEMA = cv.typed_schema(
     enum=TOLERANCE_MODE,
 )
 
+MODULATION = {
+    "ook": 0,
+    "ask": 0,
+    "2fsk": 1,
+    "fsk": 1,
+    "gfsk": 2,
+}
+
+FSK_PROFILE = {
+    "rfdk_868_2k4_dev5": 0,
+    "velux_86895_2k4_dev5": 1,
+}
+
 TuyaRfComponent = tuya_rf_ns.class_(
     "TuyaRfComponent", remote_base.RemoteReceiverBase, remote_base.RemoteTransmitterBase, cg.Component
 )
@@ -111,6 +131,14 @@ def validate_rssi_avg_mode(value):
     if value > 7:
         raise cv.Invalid("rssi_avg_mode must be between 0 and 7")
     return value
+
+def validate_register_list(count, name):
+    def validator(value):
+        value = cv.ensure_list(validate_uint8)(value)
+        if len(value) != count:
+            raise cv.Invalid(f"{name} must contain exactly {count} register values")
+        return value
+    return validator
 
 AGC_OOK_REGISTER_KEYS = {
     "agc1": 0,
@@ -304,6 +332,19 @@ CONFIG_SCHEMA = remote_base.validate_triggers(
             cv.Optional(CONF_RSSI_AVG_MODE): validate_rssi_avg_mode,
             cv.Optional(CONF_AGC_OOK_REGISTERS): validate_agc_ook_registers,
             cv.Optional(CONF_DUMP_SUPPRESSED_RAW, default=False): cv.boolean,
+            cv.Optional(CONF_MODULATION, default="ook"): cv.enum(MODULATION, lower=True),
+            cv.Optional(CONF_FSK_PROFILE, default="velux_86895_2k4_dev5"): cv.enum(FSK_PROFILE, lower=True),
+            cv.Optional(CONF_FSK_DIRECT_MODE, default=True): cv.boolean,
+            cv.Optional(CONF_FSK_FILTER, default="2us"): cv.All(
+                cv.positive_time_period_microseconds,
+                cv.Range(max=TimePeriod(microseconds=4294967295)),
+            ),
+            cv.Optional(CONF_FSK_FRAME_GAP, default="5ms"): cv.All(
+                cv.positive_time_period_microseconds,
+                cv.Range(max=TimePeriod(microseconds=4294967295)),
+            ),
+            cv.Optional(CONF_FSK_DATA_RATE_REGISTERS): validate_register_list(24, CONF_FSK_DATA_RATE_REGISTERS),
+            cv.Optional(CONF_FSK_BASEBAND_REGISTERS): validate_register_list(29, CONF_FSK_BASEBAND_REGISTERS),
         }
     ).extend(cv.COMPONENT_SCHEMA)
 )
@@ -375,10 +416,21 @@ async def to_code(config):
     cg.add(var.set_dout_mute(config[CONF_DOUT_MUTE]))
     cg.add(var.set_frequency_mhz(config[CONF_FREQUENCY]))
     cg.add(var.set_dump_suppressed_raw(config[CONF_DUMP_SUPPRESSED_RAW]))
+    cg.add(var.set_modulation(config[CONF_MODULATION]))
+    cg.add(var.set_fsk_profile(config[CONF_FSK_PROFILE]))
+    cg.add(var.set_fsk_direct_mode(config[CONF_FSK_DIRECT_MODE]))
+    cg.add(var.set_fsk_filter_us(config[CONF_FSK_FILTER]))
+    cg.add(var.set_fsk_frame_gap_us(config[CONF_FSK_FRAME_GAP]))
     if CONF_RSSI_AVG_MODE in config:
         cg.add(var.set_rssi_avg_mode(config[CONF_RSSI_AVG_MODE]))
     if CONF_AGC_OOK_REGISTERS in config:
         for name, offset in AGC_OOK_REGISTER_KEYS.items():
             if name in config[CONF_AGC_OOK_REGISTERS]:
                 cg.add(var.set_agc_ook_register(offset, config[CONF_AGC_OOK_REGISTERS][name]))
+    if CONF_FSK_DATA_RATE_REGISTERS in config:
+        for offset, value in enumerate(config[CONF_FSK_DATA_RATE_REGISTERS]):
+            cg.add(var.set_fsk_data_rate_register(offset, value))
+    if CONF_FSK_BASEBAND_REGISTERS in config:
+        for offset, value in enumerate(config[CONF_FSK_BASEBAND_REGISTERS]):
+            cg.add(var.set_fsk_baseband_register(offset, value))
     validate_pulses(config)

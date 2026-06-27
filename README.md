@@ -62,10 +62,38 @@ You can use the same configuration variables of the [remote_transmitter](https:/
 |accept_on_restart|true|accept a plausible previous frame when another start pulse arrives, instead of always discarding it and keeping only the last repeat|
 |dedupe_window|200ms|suppress accepted frames that arrive shortly after a previous accepted frame, useful when accept_on_restart exposes repeated copies inside one burst|
 |frequency|433|default CMT2300A frequency in MHz. Supported values are 433 (433.920 MHz register bank), 315 (315.000 MHz register bank), and 868 (868.000 MHz register bank)|
+|modulation|ook|receiver modulation path. Supported values are `ook`, `2fsk`/`fsk`, and `gfsk`. OOK is the normal raw pulse path; FSK/GFSK use the experimental direct-DOUT debug path|
+|fsk_profile|velux_86895_2k4_dev5|FSK debug profile. `velux_86895_2k4_dev5` tunes the RF bank to 868.950 MHz and loads a 2-FSK RFPDK seed profile; `rfdk_868_2k4_dev5` keeps the standard 868 MHz bank|
+|fsk_direct_mode|true|force the FSK baseband into direct mode so DOUT edges can be logged without known sync/packet settings|
+|fsk_filter|2us|edge filter used only for FSK/GFSK debug; keep it low because FSK bit periods are much shorter than OOK pulses|
+|fsk_frame_gap|5ms|quiet gap used to close an FSK debug burst|
+|fsk_data_rate_registers||optional 24-byte override for CMT2300A registers 0x20..0x37, useful for pasting RFPDK FSK/GFSK exports|
+|fsk_baseband_registers||optional 29-byte override for CMT2300A registers 0x38..0x54, useful for pasting RFPDK FSK/GFSK exports|
 |sclk_pin|P14|clock of the spi communication with the CMT2300A. Only the number of the pin is used, the remaining parameters of the pin schema are ignored|
 |mosi_pin|P16|the bidirectional data pin of the spi communication. Only the number of the pin is used, the remaining parameters of the pin schema are ignored|
 |csb_pin|P6|spi chip select pin to read/write registers. Only the number of the pin is used, the remaining parameters of the pin schema are ignored|
 |fcsb_pin|P26|spi chip select pin to read/write the fifo. It is not used|
+
+### Experimental FSK/GFSK receive debug
+
+The FSK/GFSK path is intended for discovery work, for example VELUX/io-homecontrol tests. It does not decode io-homecontrol and it does not know the real packet format. It only configures the CMT2300A for FSK demodulation and logs DOUT edge bursts with RSSI so you can see whether a demodulated bitstream is present.
+
+```yaml
+tuya_rf:
+  id: rf
+  receiver_disabled: true
+  dump: raw
+  frequency: 868
+  modulation: 2fsk
+  fsk_profile: velux_86895_2k4_dev5
+  fsk_direct_mode: true
+  fsk_filter: 2us
+  fsk_frame_gap: 5ms
+  min_pulses: 8
+  max_pulses: 900
+```
+
+Expected debug output is `FSK burst accepted ...` followed by one `tuya_rf.raw` line prefixed with `FSK Raw`. If you get no bursts, the frequency or FSK data-rate/deviation profile is probably wrong. Use `fsk_data_rate_registers` and `fsk_baseband_registers` to test exact RFPDK exports without changing code.
 
 ## actions
 

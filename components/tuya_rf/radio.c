@@ -27,6 +27,9 @@ static uint16_t g_current_frequency_mhz = 433;
 static uint16_t g_current_tx_bank_frequency_mhz = 433;
 static uint8_t g_current_tx_bank_868_profile = TUYA_RF_TX_PROFILE_868_AHOY_OPENDTU;
 static int8_t g_current_tx_power_868_dbm = 13;
+static uint8_t g_current_modulation = TUYA_RF_MODULATION_OOK;
+static uint8_t g_current_fsk_profile = 0xFF;
+static bool g_current_fsk_direct_mode = true;
 static const uint8_t g_agc_ook_register_addrs[TUYA_RF_AGC_OOK_REGISTER_COUNT] = {
     CMT2300A_CUS_AGC1,
     CMT2300A_CUS_AGC2,
@@ -39,8 +42,12 @@ static const uint8_t g_agc_ook_register_addrs[TUYA_RF_AGC_OOK_REGISTER_COUNT] = 
     CMT2300A_CUS_OOK5,
 };
 
-static const uint8_t *RF_GetFrequencyBank(uint16_t frequency_mhz)
+static const uint8_t *RF_GetFrequencyBank(uint16_t frequency_mhz, uint8_t modulation, uint8_t fsk_profile)
 {
+    if (modulation != TUYA_RF_MODULATION_OOK &&
+        fsk_profile == TUYA_RF_FSK_PROFILE_VELUX_86895_2K4_DEV5) {
+        return g_cmt2300aFrequencyBank868950;
+    }
     if (frequency_mhz == 315) {
         return g_cmt2300aFrequencyBank315;
     }
@@ -53,19 +60,83 @@ static const uint8_t *RF_GetFrequencyBank(uint16_t frequency_mhz)
     return NULL;
 }
 
-static int RF_ConfigFrequencyBank(uint16_t frequency_mhz)
+static int RF_ConfigFrequencyBank(uint16_t frequency_mhz, uint8_t modulation, uint8_t fsk_profile)
 {
-    const uint8_t *frequency_bank = RF_GetFrequencyBank(frequency_mhz);
+    const uint8_t *frequency_bank = RF_GetFrequencyBank(frequency_mhz, modulation, fsk_profile);
     if (frequency_bank == NULL) {
         return 3;
     }
-    if (g_current_frequency_mhz == frequency_mhz) {
+    if (g_current_frequency_mhz == frequency_mhz &&
+        g_current_modulation == modulation &&
+        (modulation == TUYA_RF_MODULATION_OOK || g_current_fsk_profile == fsk_profile)) {
         return 0;
     }
     if (!CMT2300A_ConfigRegBank(CMT2300A_FREQUENCY_BANK_ADDR, frequency_bank, CMT2300A_FREQUENCY_BANK_SIZE)) {
         return 1;
     }
     g_current_frequency_mhz = frequency_mhz;
+    return 0;
+}
+
+static void RF_ApplyRegisterOverrides(uint8_t start_addr, uint8_t count, uint32_t mask, const uint8_t *values)
+{
+    if (values == NULL || mask == 0) {
+        return;
+    }
+    for (uint8_t i = 0; i < count; i++) {
+        if ((mask & (1UL << i)) != 0) {
+            CMT2300A_WriteReg(start_addr + i, values[i]);
+        }
+    }
+}
+
+static int RF_ConfigModemBanks(uint8_t modulation, uint8_t fsk_profile, bool fsk_direct_mode,
+                               uint32_t fsk_data_rate_register_mask, const uint8_t *fsk_data_rate_registers,
+                               uint32_t fsk_baseband_register_mask, const uint8_t *fsk_baseband_registers)
+{
+    const bool is_fsk = modulation == TUYA_RF_MODULATION_2FSK || modulation == TUYA_RF_MODULATION_GFSK;
+    if (!is_fsk) {
+        if (g_current_modulation != TUYA_RF_MODULATION_OOK) {
+            if (!CMT2300A_ConfigRegBank(CMT2300A_DATA_RATE_BANK_ADDR, g_cmt2300aDataRateBank,
+                                        CMT2300A_DATA_RATE_BANK_SIZE)) {
+                return 1;
+            }
+            if (!CMT2300A_ConfigRegBank(CMT2300A_BASEBAND_BANK_ADDR, g_cmt2300aBasebandBank,
+                                        CMT2300A_BASEBAND_BANK_SIZE)) {
+                return 1;
+            }
+        }
+        g_current_modulation = TUYA_RF_MODULATION_OOK;
+        g_current_fsk_profile = 0xFF;
+        g_current_fsk_direct_mode = true;
+        return 0;
+    }
+
+    if (g_current_modulation == modulation &&
+        g_current_fsk_profile == fsk_profile &&
+        g_current_fsk_direct_mode == fsk_direct_mode &&
+        fsk_data_rate_register_mask == 0 &&
+        fsk_baseband_register_mask == 0) {
+        return 0;
+    }
+
+    const uint8_t *data_rate_bank = g_cmt2300aDataRateBankFskRfpdk2k4Dev5;
+    const uint8_t *baseband_bank = fsk_direct_mode ? g_cmt2300aBasebandBankFskDirect : g_cmt2300aBasebandBankFskPacket;
+
+    if (!CMT2300A_ConfigRegBank(CMT2300A_DATA_RATE_BANK_ADDR, data_rate_bank, CMT2300A_DATA_RATE_BANK_SIZE)) {
+        return 1;
+    }
+    if (!CMT2300A_ConfigRegBank(CMT2300A_BASEBAND_BANK_ADDR, baseband_bank, CMT2300A_BASEBAND_BANK_SIZE)) {
+        return 1;
+    }
+    RF_ApplyRegisterOverrides(CMT2300A_DATA_RATE_BANK_ADDR, CMT2300A_DATA_RATE_BANK_SIZE,
+                              fsk_data_rate_register_mask, fsk_data_rate_registers);
+    RF_ApplyRegisterOverrides(CMT2300A_BASEBAND_BANK_ADDR, CMT2300A_BASEBAND_BANK_SIZE,
+                              fsk_baseband_register_mask, fsk_baseband_registers);
+
+    g_current_modulation = modulation;
+    g_current_fsk_profile = fsk_profile;
+    g_current_fsk_direct_mode = fsk_direct_mode;
     return 0;
 }
 
@@ -164,7 +235,7 @@ int RF_SetFrequency(uint16_t frequency_mhz)
     if (!CMT2300A_GoStby()) {
         return 2;
     }
-    return RF_ConfigFrequencyBank(frequency_mhz);
+    return RF_ConfigFrequencyBank(frequency_mhz, TUYA_RF_MODULATION_OOK, 0);
 }
 
 int RF_Init(void)
@@ -185,6 +256,9 @@ int RF_Init(void)
     g_current_tx_bank_frequency_mhz = 433;
     g_current_tx_bank_868_profile = TUYA_RF_TX_PROFILE_868_AHOY_OPENDTU;
     g_current_tx_power_868_dbm = 13;
+    g_current_modulation = TUYA_RF_MODULATION_OOK;
+    g_current_fsk_profile = 0xFF;
+    g_current_fsk_direct_mode = true;
     
     // xosc_aac_code[2:0] = 2
     tmp = (~0x07) & CMT2300A_ReadReg(CMT2300A_CUS_CMT10);
@@ -205,9 +279,13 @@ int StartTx(uint16_t frequency_mhz, uint8_t tx_profile_868, int8_t tx_power_868_
     if (!CMT2300A_GoStby()) {
         return 2;
     }
-    int freq_res = RF_ConfigFrequencyBank(frequency_mhz);
+    int freq_res = RF_ConfigFrequencyBank(frequency_mhz, TUYA_RF_MODULATION_OOK, 0);
     if (freq_res != 0) {
         return freq_res;
+    }
+    int modem_res = RF_ConfigModemBanks(TUYA_RF_MODULATION_OOK, 0, true, 0, NULL, 0, NULL);
+    if (modem_res != 0) {
+        return modem_res;
     }
     int tx_bank_res = RF_ConfigTxBank(frequency_mhz, tx_profile_868, tx_power_868_dbm);
     if (tx_bank_res != 0) {
@@ -231,18 +309,31 @@ int StartTx(uint16_t frequency_mhz, uint8_t tx_profile_868, int8_t tx_power_868_
 
 int StartRx(uint16_t frequency_mhz, bool dout_mute, int8_t rssi_avg_mode,
             uint16_t agc_ook_register_mask,
-            const uint8_t agc_ook_registers[TUYA_RF_AGC_OOK_REGISTER_COUNT]) {
+            const uint8_t agc_ook_registers[TUYA_RF_AGC_OOK_REGISTER_COUNT],
+            uint8_t modulation, uint8_t fsk_profile, bool fsk_direct_mode,
+            uint32_t fsk_data_rate_register_mask,
+            const uint8_t fsk_data_rate_registers[TUYA_RF_FSK_DATA_RATE_REGISTER_COUNT],
+            uint32_t fsk_baseband_register_mask,
+            const uint8_t fsk_baseband_registers[TUYA_RF_FSK_BASEBAND_REGISTER_COUNT]) {
     if (!CMT2300A_GoStby()) {
         return 2;
     }
-    int freq_res = RF_ConfigFrequencyBank(frequency_mhz);
+    int freq_res = RF_ConfigFrequencyBank(frequency_mhz, modulation, fsk_profile);
     if (freq_res != 0) {
         return freq_res;
     }
+    int modem_res = RF_ConfigModemBanks(modulation, fsk_profile, fsk_direct_mode,
+                                        fsk_data_rate_register_mask, fsk_data_rate_registers,
+                                        fsk_baseband_register_mask, fsk_baseband_registers);
+    if (modem_res != 0) {
+        return modem_res;
+    }
 
 	CMT2300A_WriteReg(CMT2300A_CUS_SYS2 , 0);
-    RF_SetDoutMute(dout_mute);
-    RF_ConfigRxDebugTuning(rssi_avg_mode, agc_ook_register_mask, agc_ook_registers);
+    if (modulation == TUYA_RF_MODULATION_OOK) {
+        RF_SetDoutMute(dout_mute);
+        RF_ConfigRxDebugTuning(rssi_avg_mode, agc_ook_register_mask, agc_ook_registers);
+    }
 	CMT2300A_EnableTxDin(false);
 	CMT2300A_EnableFifoMerge(true);
 	CMT2300A_WriteReg(CMT2300A_CUS_PKT29, 0x20); 
