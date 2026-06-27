@@ -89,11 +89,12 @@ class TuyaRfComponent : public remote_base::RemoteTransmitterBase,
   void set_tx_profile_868(uint8_t tx_profile_868) { this->tx_profile_868_ = tx_profile_868 > 1 ? 1 : tx_profile_868; }
   void set_tx_power_868_dbm(int8_t tx_power_868_dbm) { this->tx_power_868_dbm_ = tx_power_868_dbm == 20 ? 20 : 13; }
   void set_next_transmit_frequency_mhz(uint16_t frequency_mhz) { this->next_transmit_frequency_mhz_ = frequency_mhz; }
-  void set_modulation(uint8_t modulation) { this->modulation_ = modulation > TUYA_RF_MODULATION_GFSK ? TUYA_RF_MODULATION_OOK : modulation; }
-  void set_fsk_profile(uint8_t fsk_profile) { this->fsk_profile_ = fsk_profile > TUYA_RF_FSK_PROFILE_VELUX_86895_2K4_DEV5 ? TUYA_RF_FSK_PROFILE_VELUX_86895_2K4_DEV5 : fsk_profile; }
-  void set_fsk_direct_mode(bool fsk_direct_mode) { this->fsk_direct_mode_ = fsk_direct_mode; }
-  void set_fsk_filter_us(uint32_t fsk_filter_us) { this->fsk_filter_us_ = fsk_filter_us; }
-  void set_fsk_frame_gap_us(uint32_t fsk_frame_gap_us) { this->fsk_frame_gap_us_ = fsk_frame_gap_us; }
+  void set_modulation(uint8_t modulation);
+  void set_fsk_profile(uint8_t fsk_profile);
+  void set_fsk_direct_mode(bool fsk_direct_mode);
+  void set_fsk_filter_us(uint32_t fsk_filter_us);
+  void set_fsk_frame_gap_us(uint32_t fsk_frame_gap_us);
+  void set_fsk_max_edges(uint32_t fsk_max_edges) { this->fsk_max_edges_ = fsk_max_edges; }
   void set_fsk_data_rate_register(uint8_t offset, uint8_t value) {
     if (offset < TUYA_RF_FSK_DATA_RATE_REGISTER_COUNT) {
       this->fsk_data_rate_register_mask_ |= 1UL << offset;
@@ -125,6 +126,7 @@ class TuyaRfComponent : public remote_base::RemoteTransmitterBase,
   void await_target_time_();
   void set_receiver(bool on);
   void reset_receiver_buffer_();
+  void restart_receiver_if_active_();
   void log_frame_stats_(const char *event, uint32_t pulses, uint32_t duration_us);
   void log_raw_frame_(const char *prefix = "Received Raw");
   void log_buffer_raw_(const char *prefix, uint32_t end_index, uint32_t appended_us = 0);
@@ -169,6 +171,7 @@ class TuyaRfComponent : public remote_base::RemoteTransmitterBase,
   bool fsk_direct_mode_{true};
   uint32_t fsk_filter_us_{2};
   uint32_t fsk_frame_gap_us_{5000};
+  uint32_t fsk_max_edges_{900};
   uint32_t fsk_data_rate_register_mask_{0};
   uint8_t fsk_data_rate_registers_[TUYA_RF_FSK_DATA_RATE_REGISTER_COUNT]{};
   uint32_t fsk_baseband_register_mask_{0};

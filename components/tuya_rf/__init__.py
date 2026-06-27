@@ -45,6 +45,7 @@ CONF_FSK_PROFILE = "fsk_profile"
 CONF_FSK_DIRECT_MODE = "fsk_direct_mode"
 CONF_FSK_FILTER = "fsk_filter"
 CONF_FSK_FRAME_GAP = "fsk_frame_gap"
+CONF_FSK_MAX_EDGES = "fsk_max_edges"
 CONF_FSK_DATA_RATE_REGISTERS = "fsk_data_rate_registers"
 CONF_FSK_BASEBAND_REGISTERS = "fsk_baseband_registers"
 
@@ -343,6 +344,10 @@ CONFIG_SCHEMA = remote_base.validate_triggers(
                 cv.positive_time_period_microseconds,
                 cv.Range(max=TimePeriod(microseconds=4294967295)),
             ),
+            cv.Optional(CONF_FSK_MAX_EDGES, default=900): cv.All(
+                cv.uint32_t,
+                cv.Range(min=2, max=1000),
+            ),
             cv.Optional(CONF_FSK_DATA_RATE_REGISTERS): validate_register_list(24, CONF_FSK_DATA_RATE_REGISTERS),
             cv.Optional(CONF_FSK_BASEBAND_REGISTERS): validate_register_list(29, CONF_FSK_BASEBAND_REGISTERS),
         }
@@ -421,6 +426,7 @@ async def to_code(config):
     cg.add(var.set_fsk_direct_mode(config[CONF_FSK_DIRECT_MODE]))
     cg.add(var.set_fsk_filter_us(config[CONF_FSK_FILTER]))
     cg.add(var.set_fsk_frame_gap_us(config[CONF_FSK_FRAME_GAP]))
+    cg.add(var.set_fsk_max_edges(config[CONF_FSK_MAX_EDGES]))
     if CONF_RSSI_AVG_MODE in config:
         cg.add(var.set_rssi_avg_mode(config[CONF_RSSI_AVG_MODE]))
     if CONF_AGC_OOK_REGISTERS in config:
