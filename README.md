@@ -68,6 +68,7 @@ You can use the same configuration variables of the [remote_transmitter](https:/
 |fsk_filter|2us|edge filter used only for FSK/GFSK debug; keep it low because FSK bit periods are much shorter than OOK pulses|
 |fsk_frame_gap|5ms|quiet gap used to close an FSK debug burst|
 |fsk_max_edges|900|maximum DOUT edges in one FSK/GFSK debug burst; separate from the OOK `max_pulses` filter|
+|fsk_min_rssi|-128|minimum RSSI in dBm required to accept and dump an FSK/GFSK debug burst; weak bursts below this value are ignored before raw logging|
 |fsk_data_rate_registers||optional 24-byte override for CMT2300A registers 0x20..0x37, useful for pasting RFPDK FSK/GFSK exports|
 |fsk_baseband_registers||optional 29-byte override for CMT2300A registers 0x38..0x54, useful for pasting RFPDK FSK/GFSK exports|
 |sclk_pin|P14|clock of the spi communication with the CMT2300A. Only the number of the pin is used, the remaining parameters of the pin schema are ignored|
@@ -91,10 +92,11 @@ tuya_rf:
   fsk_filter: 2us
   fsk_frame_gap: 5ms
   fsk_max_edges: 900
+  fsk_min_rssi: -100
   min_pulses: 8
 ```
 
-Expected debug output is `FSK burst accepted ...` followed by one `tuya_rf.raw` line prefixed with `FSK Raw`. If you get no bursts, the frequency or FSK data-rate/deviation profile is probably wrong. Use `fsk_data_rate_registers` and `fsk_baseband_registers` to test exact RFPDK exports without changing code.
+Expected debug output is `FSK burst accepted ...` followed by one `tuya_rf.raw` line prefixed with `FSK Raw`. If most bursts show RSSI near `-128 dBm`, set `fsk_min_rssi` higher, for example `-100`, to suppress noise-floor dumps. If you get no bursts, the frequency or FSK data-rate/deviation profile is probably wrong. Use `fsk_data_rate_registers` and `fsk_baseband_registers` to test exact RFPDK exports without changing code.
 
 ## actions
 

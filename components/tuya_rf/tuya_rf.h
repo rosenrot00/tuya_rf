@@ -95,6 +95,7 @@ class TuyaRfComponent : public remote_base::RemoteTransmitterBase,
   void set_fsk_filter_us(uint32_t fsk_filter_us);
   void set_fsk_frame_gap_us(uint32_t fsk_frame_gap_us);
   void set_fsk_max_edges(uint32_t fsk_max_edges) { this->fsk_max_edges_ = fsk_max_edges; }
+  void set_fsk_min_rssi_dbm(int8_t fsk_min_rssi_dbm) { this->fsk_min_rssi_dbm_ = fsk_min_rssi_dbm; }
   void set_fsk_data_rate_register(uint8_t offset, uint8_t value) {
     if (offset < TUYA_RF_FSK_DATA_RATE_REGISTER_COUNT) {
       this->fsk_data_rate_register_mask_ |= 1UL << offset;
@@ -172,6 +173,7 @@ class TuyaRfComponent : public remote_base::RemoteTransmitterBase,
   uint32_t fsk_filter_us_{2};
   uint32_t fsk_frame_gap_us_{5000};
   uint32_t fsk_max_edges_{900};
+  int8_t fsk_min_rssi_dbm_{-128};
   uint32_t fsk_data_rate_register_mask_{0};
   uint8_t fsk_data_rate_registers_[TUYA_RF_FSK_DATA_RATE_REGISTER_COUNT]{};
   uint32_t fsk_baseband_register_mask_{0};

@@ -308,6 +308,7 @@ void TuyaRfComponent::dump_config() {
     ESP_LOGCONFIG(TAG, "  FSK edge filter: %u us", this->fsk_filter_us_);
     ESP_LOGCONFIG(TAG, "  FSK burst gap: %u us", this->fsk_frame_gap_us_);
     ESP_LOGCONFIG(TAG, "  FSK max edges: %u", this->fsk_max_edges_);
+    ESP_LOGCONFIG(TAG, "  FSK minimum RSSI: %d dBm", this->fsk_min_rssi_dbm_);
     if (this->fsk_data_rate_register_mask_ != 0) {
       ESP_LOGCONFIG(TAG, "  FSK data-rate register overrides: mask=0x%06X", this->fsk_data_rate_register_mask_);
     }
@@ -427,8 +428,19 @@ void TuyaRfComponent::process_fsk_debug_() {
     return;
   }
 
-  this->received_frames_++;
   const int rssi_dbm = CMT2300A_GetRssiDBm();
+  if (rssi_dbm < this->fsk_min_rssi_dbm_) {
+    this->rejected_frames_++;
+    ESP_LOGD(TAG,
+             "FSK burst ignored: rssi=%d dBm below min_rssi=%d dBm edges=%u duration=%u us gap=%u us rejected=%u",
+             rssi_dbm, this->fsk_min_rssi_dbm_, edge_count, duration_us, gap, this->rejected_frames_);
+    this->fsk_receive_started_ = false;
+    s.buffer_read_at = write_at;
+    old_write_at_ = write_at;
+    return;
+  }
+
+  this->received_frames_++;
   ESP_LOGD(TAG, "FSK burst accepted #%u: edges=%u duration=%u us gap=%u us rssi=%d dBm%s",
            this->received_frames_, edge_count, duration_us, gap, rssi_dbm,
            forced_end ? " forced" : "");
